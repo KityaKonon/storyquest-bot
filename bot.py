@@ -11,6 +11,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://storyquest-bot.onrender.com")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
@@ -43,23 +44,38 @@ def send_message(chat_id, text, reply_markup=None):
         "chat_id": chat_id,
         "text": text,
     }
+
     if reply_markup:
         data["reply_markup"] = reply_markup
 
-    requests.post(f"{TELEGRAM_API}/sendMessage", json=data, timeout=20)
+    response = requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json=data,
+        timeout=20
+    )
+
+    print("SEND MESSAGE RESPONSE:", response.text, flush=True)
 
 def answer_callback(callback_query_id):
-    requests.post(
+    response = requests.post(
         f"{TELEGRAM_API}/answerCallbackQuery",
         json={"callback_query_id": callback_query_id},
         timeout=20
     )
 
-def generate_scene(user_id, source_text="", choice=None):
-    history = user_states.get(user_id, {}).get("history", "")
+    print("ANSWER CALLBACK RESPONSE:", response.text, flush=True)
 
-    if choice:
-        prompt = f"""
+def generate_scene(user_id, source_text="", choice=None):
+    try:
+        print("=== GENERATE START ===", flush=True)
+        print("USER:", user_id, flush=True)
+        print("SOURCE TEXT:", source_text, flush=True)
+        print("CHOICE:", choice, flush=True)
+
+        history = user_states.get(user_id, {}).get("history", "")
+
+        if choice:
+            prompt = f"""
 История квеста до этого момента:
 {history}
 
@@ -69,9 +85,20 @@ def generate_scene(user_id, source_text="", choice=None):
 - покажи последствия выбора
 - добавь новую проблему или поворот
 - снова предложи ровно 3 варианта действий
+
+Формат:
+🎮 Название сцены
+
+Текст сцены.
+
+Что ты сделаешь?
+
+1. ...
+2. ...
+3. ...
 """
-    else:
-        prompt = f"""
+        else:
+            prompt = f"""
 Сделай первую сцену квеста по этому тексту:
 
 {source_text}
@@ -88,15 +115,28 @@ def generate_scene(user_id, source_text="", choice=None):
 3. ...
 """
 
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-    )
+        print("OPENAI REQUEST START", flush=True)
 
-    return response.output_text
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        print("OPENAI REQUEST DONE", flush=True)
+
+        result = response.output_text
+
+        print("OPENAI RESULT:", result, flush=True)
+
+        return result
+
+    except Exception as e:
+        error_text = str(e)
+        print("ERROR IN GENERATE:", error_text, flush=True)
+        return f"Ошибка при обращении к OpenAI:\n{error_text}"
 
 @app.route("/")
 def home():
@@ -106,6 +146,8 @@ def home():
 def webhook():
     update = request.get_json()
 
+    print("WEBHOOK UPDATE:", update, flush=True)
+
     try:
         if "message" in update:
             message = update["message"]
@@ -113,10 +155,13 @@ def webhook():
             user_id = message["from"]["id"]
             text = message.get("text", "")
 
+            print("MESSAGE TEXT:", text, flush=True)
+
             if text == "/start":
                 send_message(
                     chat_id,
-                    "Привет! 📚\n\nЯ бот «Квест по книге».\n"
+                    "Привет! 📚\n\n"
+                    "Я бот «Квест по книге».\n"
                     "Пришли мне отрывок из книги или истории, "
                     "а я превращу его в интерактивный квест с выбором действий."
                 )
@@ -125,6 +170,10 @@ def webhook():
             send_message(chat_id, "Создаю квест... ✨")
 
             scene = generate_scene(user_id=user_id, source_text=text)
+
+            if scene.startswith("Ошибка при обращении к OpenAI:"):
+                send_message(chat_id, scene)
+                return "ok"
 
             user_states[user_id] = {
                 "source_text": text,
@@ -140,28 +189,55 @@ def webhook():
             user_id = callback["from"]["id"]
             choice = callback["data"]
 
+            print("CALLBACK CHOICE:", choice, flush=True)
+
             answer_callback(callback_id)
+
             send_message(chat_id, "Продолжаю историю... ✨")
 
             scene = generate_scene(user_id=user_id, choice=choice)
 
+            if scene.startswith("Ошибка при обращении к OpenAI:"):
+                send_message(chat_id, scene)
+                return "ok"
+
             if user_id not in user_states:
-                user_states[user_id] = {"history": ""}
+                user_states[user_id] = {
+                    "source_text": "",
+                    "history": ""
+                }
 
             user_states[user_id]["history"] += f"\n\nВыбор пользователя: {choice}\n{scene}"
 
             send_message(chat_id, scene, reply_markup=keyboard())
 
     except Exception as e:
-        print("ERROR:", e, flush=True)
-        if "message" in update:
-            chat_id = update["message"]["chat"]["id"]
-            send_message(chat_id, "Произошла ошибка при создании квеста. Попробуй ещё раз чуть позже.")
+        error_text = str(e)
+        print("ERROR IN WEBHOOK:", error_text, flush=True)
+
+        try:
+            if "message" in update:
+                chat_id = update["message"]["chat"]["id"]
+            elif "callback_query" in update:
+                chat_id = update["callback_query"]["message"]["chat"]["id"]
+            else:
+                chat_id = None
+
+            if chat_id:
+                send_message(
+                    chat_id,
+                    f"Произошла ошибка в обработке сообщения:\n{error_text}"
+                )
+        except Exception as send_error:
+            print("ERROR WHILE SENDING ERROR MESSAGE:", str(send_error), flush=True)
 
     return "ok"
 
 def set_webhook():
     url = f"{WEBHOOK_URL}/webhook"
+
+    print("SETTING WEBHOOK TO:", url, flush=True)
+
     response = requests.post(
         f"{TELEGRAM_API}/setWebhook",
         json={
@@ -170,15 +246,20 @@ def set_webhook():
         },
         timeout=20
     )
-    print("Webhook set:", response.text, flush=True)
+
+    print("WEBHOOK SET RESPONSE:", response.text, flush=True)
 
 if __name__ == "__main__":
     if not TELEGRAM_TOKEN:
         raise ValueError("Не найден TELEGRAM_BOT_TOKEN")
+
     if not OPENAI_API_KEY:
         raise ValueError("Не найден OPENAI_API_KEY")
 
     set_webhook()
 
     port = int(os.environ.get("PORT", 10000))
+
+    print("STARTING FLASK APP ON PORT:", port, flush=True)
+
     app.run(host="0.0.0.0", port=port)
