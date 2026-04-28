@@ -117,7 +117,7 @@ def generate_scene(user_id, source_text="", choice=None):
 
         print("OPENAI REQUEST START", flush=True)
 
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model="gpt-4.1-mini",
             input=[
                 {"role": "system", "content": SYSTEM_PROMPT},
