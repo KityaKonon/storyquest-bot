@@ -11,7 +11,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://storyquest-bot.onrender.com")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
@@ -118,8 +117,8 @@ def generate_scene(user_id, source_text="", choice=None):
         print("OPENAI REQUEST START", flush=True)
 
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            input=[
+            model="gpt-4.1",
+            messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
@@ -127,7 +126,7 @@ def generate_scene(user_id, source_text="", choice=None):
 
         print("OPENAI REQUEST DONE", flush=True)
 
-        result = response.output_text
+        result = response.choices[0].message.content
 
         print("OPENAI RESULT:", result, flush=True)
 
@@ -192,7 +191,6 @@ def webhook():
             print("CALLBACK CHOICE:", choice, flush=True)
 
             answer_callback(callback_id)
-
             send_message(chat_id, "Продолжаю историю... ✨")
 
             scene = generate_scene(user_id=user_id, choice=choice)
